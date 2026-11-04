@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Close Reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Five-colour highlighting and notes for reading on the web.",
   "permissions": ["storage"],
+  "host_permissions": ["https://api.notion.com/*"],
+  "options_page": "options.html",
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "Close Reader: turn highlighting on or off (Alt+Shift+H)" },
   "commands": {

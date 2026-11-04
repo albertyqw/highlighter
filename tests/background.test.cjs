@@ -8,7 +8,8 @@ function worker(connection, importer = async () => ({ url: 'https://www.notion.s
   const chrome = {
     action: { setBadgeBackgroundColor() {}, onClicked: { addListener() {} } },
     commands: { onCommand: { addListener() {} } },
-    runtime: { id: 'test-extension', onMessage: { addListener(fn) { listener = fn; } }, openOptionsPage: async () => {} },
+    runtime: { id: 'test-extension', getURL: path => 'chrome-extension://test-extension/' + path, onInstalled: { addListener() {} }, onMessage: { addListener(fn) { listener = fn; } }, openOptionsPage: async () => {} },
+    contextMenus: { onClicked: { addListener() {} } },
     storage: { local: { get: async () => ({ notionConnection: connection }) } },
   };
   vm.runInNewContext(readFileSync(require.resolve('../close-reader/background.js'), 'utf8'), {
@@ -69,4 +70,12 @@ test('ignores foreign senders and import requests without a tab', () => {
   const unexpected = () => assert.fail('must not respond');
   assert.equal(listener({ type: 'notion-import' }, { id: 'other', tab: { id: 1 } }, unexpected), undefined);
   assert.equal(listener({ type: 'notion-import' }, { id: 'test-extension' }, unexpected), undefined);
+});
+
+test('allows Notion imports from the extension PDF reader without sender.tab', async () => {
+  const listener = worker({ token: 'token', dataSourceId: 'reads' });
+  let result;
+  listener({ type: 'notion-import', page: {} }, { id: 'test-extension', url: 'chrome-extension://test-extension/pdf.html?source=https://example.com/paper.pdf', documentId: 'pdf-document' }, value => { result = value; });
+  await flush();
+  assert.equal(result.url, 'https://www.notion.so/test');
 });

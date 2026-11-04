@@ -117,15 +117,19 @@ const CloseReaderNotion = (() => {
 
   function blocksFor(page) {
     if (!page || !Array.isArray(page.items) || !page.items.length) throw new Error('Highlight something before importing.');
-    const url = new URL(page.url);
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only web page notes can be imported.');
-    const blocks = chunks(page.url).map(text => block('paragraph', text));
-    if (page.url.length <= 2000) blocks[0].paragraph.rich_text[0].text.link = { url: page.url };
+    const localPdf = page.kind === 'pdf' && !page.url && typeof page.sourceName === 'string' && page.sourceName.trim();
+    if (!localPdf) {
+      const url = new URL(page.url);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only web page or PDF notes can be imported.');
+    }
+    const blocks = chunks(localPdf ? `Local PDF: ${page.sourceName}` : page.url).map(text => block('paragraph', text));
+    if (!localPdf && page.url.length <= 2000) blocks[0].paragraph.rich_text[0].text.link = { url: page.url };
     blocks.push(block('paragraph', `Published: ${page.publishedDate}`));
     let main = null;
     for (const item of [...page.items].sort((a, b) => a.pos - b.pos)) {
       if (typeof item.text !== 'string' || !item.text.trim() || typeof item.note !== 'string' || !colors[item.color]) throw new Error('Invalid highlight or note.');
-      const parts = chunks(item.text).map(text => block('bulleted_list_item', text, colors[item.color]));
+      const quote = item.pdfPage ? `${item.text} (PDF page ${item.pdfPage})` : item.text;
+      const parts = chunks(quote).map(text => block('bulleted_list_item', text, colors[item.color]));
       const last = parts[parts.length - 1];
       const notes = item.note.trim() ? chunks('Note: ' + item.note.trim()).map(text => block('paragraph', text)) : [];
       // Notes belong to their highlight; support belongs to the preceding main idea.

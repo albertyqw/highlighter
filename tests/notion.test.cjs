@@ -135,3 +135,14 @@ test('authentication and permission errors do not disclose the token', async () 
 test('network failure warns about uncertain writes', async () => {
   await assert.rejects(request('token', 'pages', 'POST', {}, async () => { throw new Error('offline'); }), /Check Notion before retrying/);
 });
+
+test('PDF exports keep page references and do not send local file paths', () => {
+  const local = { ...page([note({ pdfPage: 7 })]), kind: 'pdf', url: '', sourceName: 'A paper.pdf' };
+  const blocks = blocksFor(local);
+  assert.equal(text(blocks[0]), 'Local PDF: A paper.pdf');
+  assert.equal(blocks[0].paragraph.rich_text[0].text.link, undefined);
+  assert.match(text(blocks[2]), /Main idea \(PDF page 7\)/);
+  const remote = blocksFor({ ...page([note({ pdfPage: 2 })]), kind: 'pdf', url: 'https://example.com/paper.pdf' });
+  assert.equal(remote[0].paragraph.rich_text[0].text.link.url, 'https://example.com/paper.pdf');
+  assert.match(text(remote[2]), /PDF page 2/);
+});

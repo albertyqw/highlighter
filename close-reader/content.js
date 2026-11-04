@@ -12,8 +12,11 @@
   ];
   const BY_KEY = Object.fromEntries(COLORS.map((c) => [c.key, c]));
   const CONTEXT = 40;
-  const SKIP = 'script,style,noscript,textarea,input,select,option,[contenteditable]:not([contenteditable="false"]),#close-reader-host';
-  const storageKey = 'cr:' + location.origin + location.pathname + location.search;
+  const SKIP = 'script,style,noscript,textarea,input,select,option,[data-cr-ui],[contenteditable]:not([contenteditable="false"]),#close-reader-host';
+  const pdfMode = document.documentElement.dataset.crPdf === 'true' && location.href.startsWith(chrome.runtime.getURL('pdf.html'));
+  const sourceUrl = pdfMode ? document.documentElement.dataset.crSourceUrl : location.href;
+  const sourceName = pdfMode ? document.documentElement.dataset.crSourceName : '';
+  const storageKey = pdfMode ? document.documentElement.dataset.crStorageKey : 'cr:' + location.origin + location.pathname + location.search;
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   let enabled = false;
@@ -38,7 +41,7 @@
     try {
       if (highlights.length) {
         chrome.storage.local.set({
-          [storageKey]: { title: document.title, url: location.href, updated: new Date().toISOString(), items: highlights },
+          [storageKey]: { title: document.title, url: sourceUrl, sourceName, updated: new Date().toISOString(), items: highlights },
         });
       } else {
         chrome.storage.local.remove(storageKey);
@@ -49,8 +52,8 @@
   }
 
   // ---------- text index: the page's visible text as one string ----------
-  function buildIndex() {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+  function buildIndex(scope = pdfMode ? document.getElementById('pdf-pages') : document.body) {
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
       acceptNode(n) {
         if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
         const p = n.parentElement;
@@ -129,7 +132,7 @@
     let bestDist = Infinity;
     let j = t.indexOf(h.text);
     while (j >= 0) {
-      const d = Math.abs(j - h.pos);
+      const d = Math.abs(j - (h.pagePos ?? h.pos));
       if (d < bestDist) { best = j; bestDist = d; }
       j = t.indexOf(h.text, j + 1);
     }
@@ -142,7 +145,9 @@
     let placed = 0;
     for (const h of highlights) {
       if (isPlaced(h)) continue;
-      const idx = buildIndex();
+      const scope = pdfMode && h.pdfPage ? document.querySelector(`[data-pdf-page="${Number(h.pdfPage)}"] .textLayer`) : null;
+      if (pdfMode && !scope) continue;
+      const idx = scope ? buildIndex(scope) : buildIndex();
       const s = locate(h, idx);
       if (s >= 0 && wrap(idx, s, s + h.text.length, h)) placed++;
     }
@@ -175,27 +180,35 @@
     if (!sel.rangeCount || sel.isCollapsed) return;
     const range = sel.getRangeAt(0);
     if (isEditable(range.commonAncestorContainer)) return;
-    const idx = buildIndex();
-    const off = rangeToOffsets(range, idx);
-    if (!off) return;
-    const h = {
+    const scopes = pdfMode ? [...document.querySelectorAll('.pdf-page .textLayer')].filter(scope => range.intersectsNode(scope)) : [document.body];
+    const createdIds = [];
+    // A selection spanning PDF pages becomes one anchored highlight per page.
+    const selections = scopes.map(scope => { const idx = buildIndex(scope); return { scope, idx, off: rangeToOffsets(range, idx) }; });
+    for (const { scope, idx, off } of selections) {
+      if (!off) continue;
+      const pdfPage = pdfMode ? Number(scope.closest('[data-pdf-page]').dataset.pdfPage) : undefined;
+      const h = {
       id: uid(),
       color,
       text: idx.text.slice(off.s, off.e),
       prefix: idx.text.slice(Math.max(0, off.s - CONTEXT), off.s),
       suffix: idx.text.slice(off.e, off.e + CONTEXT),
-      pos: off.s,
+      pos: pdfMode ? pdfPage * 10000000 + off.s : off.s,
+      ...(pdfMode ? { pdfPage, pagePos: off.s } : {}),
       note: '',
       created: new Date().toISOString(),
     };
-    if (!wrap(idx, off.s, off.e, h)) return;
-    highlights.push(h);
+      if (!wrap(idx, off.s, off.e, h)) continue;
+      highlights.push(h);
+      createdIds.push(h.id);
+    }
+    if (!createdIds.length) return;
     save();
     sel.removeAllRanges();
     hidePalette();
     renderPanel();
     updatePill();
-    if (withNote) openPopover(h.id);
+    if (withNote) openPopover(createdIds[0]);
   }
 
   function setColor(id, color) {
@@ -227,19 +240,24 @@
 
   function flash(id) {
     const ms = marksFor(id);
-    if (!ms.length) return;
+    if (!ms.length) {
+      const highlight = highlights.find(item => item.id === id);
+      if (pdfMode && highlight?.pdfPage) document.dispatchEvent(new CustomEvent('cr-pdf-show-page', { detail: { page: highlight.pdfPage, id } }));
+      return;
+    }
     ms[0].scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
     ms.forEach((m) => m.classList.add('cr-flash'));
     setTimeout(() => ms.forEach((m) => m.classList.remove('cr-flash')), 1400);
   }
 
   function toMarkdown() {
-    const lines = [`# ${document.title || location.href}`, '', location.href, '', `Exported ${new Date().toLocaleDateString()}`];
+    const lines = [`# ${document.title || sourceName || sourceUrl}`, '', sourceUrl || `Local PDF: ${sourceName}`, '', `Exported ${new Date().toLocaleDateString()}`];
     for (const c of COLORS) {
       const items = highlights.filter((h) => h.color === c.key).sort((a, b) => a.pos - b.pos);
       if (!items.length) continue;
       lines.push('', `## ${c.heading}`, '');
       for (const h of items) {
+        if (h.pdfPage) lines.push(`Page ${h.pdfPage}`, '');
         h.text.split(/\n+/).map((l) => l.trim()).filter(Boolean).forEach((l) => lines.push('> ' + l));
         if (h.note.trim()) lines.push('', 'Note: ' + h.note.trim());
         lines.push('');
@@ -433,6 +451,10 @@
   let contextLoading = false;
   let notionContext = null;
   const metadata = CloseReaderArticle.extract(document);
+  if (pdfMode) {
+    metadata.title = document.title;
+    metadata.publishedDate = document.documentElement.dataset.crPublicationDate || '';
+  }
   const articleTitle = h('input', { type: 'text', 'aria-label': 'Article title' });
   articleTitle.value = metadata.title;
   const publicationDate = h('input', { type: 'date', 'aria-label': 'Publication date' });
@@ -506,7 +528,7 @@
       try {
         const result = await chrome.runtime.sendMessage({
           type: 'notion-import',
-          page: { title: articleTitle.value.trim(), publishedDate: publicationDate.value, topics: [...selected.topics], projects: [...selected.projects], url: location.href, items: highlights.map(({ text, note, color, pos }) => ({ text, note, color, pos })) },
+          page: { title: articleTitle.value.trim(), publishedDate: publicationDate.value, topics: [...selected.topics], projects: [...selected.projects], url: sourceUrl, ...(pdfMode ? { kind: 'pdf', sourceName } : {}), items: highlights.map(({ text, note, color, pos, pdfPage }) => ({ text, note, color, pos, ...(pdfPage ? { pdfPage } : {}) })) },
         });
         if (!result) throw new Error('No response from the extension. Reload this page and try again.');
         if (result.setup) {
@@ -649,6 +671,7 @@
           onclick: () => flash(x.id),
         }, [
           h('div', { class: 'quote', text: quote }),
+          x.pdfPage ? h('div', { class: 'missing', text: `PDF page ${x.pdfPage}` }) : null,
           x.note.trim() ? h('div', { class: 'note', text: x.note.trim() }) : null,
           isPlaced(x) ? null : h('div', { class: 'missing', text: 'Not found on the page right now' }),
         ]));
@@ -663,6 +686,7 @@
     hidePalette();
     if (!v) closePopover();
     updatePill();
+    if (pdfMode) document.dispatchEvent(new CustomEvent('cr-pdf-state', { detail: { enabled } }));
   }
 
   // ---------- page events ----------
@@ -713,12 +737,25 @@
     else if (msg.type === 'panel') togglePanel();
     reply({ enabled });
   });
+  if (pdfMode) {
+    document.addEventListener('cr-pdf-command', ({ detail }) => {
+      if (detail.type === 'toggle') setEnabled(!enabled);
+      else if (detail.type === 'panel') togglePanel();
+    });
+    document.addEventListener('cr-pdf-before-render', closePopover);
+    document.addEventListener('cr-pdf-page-rendered', () => { restorePending(); renderPanel(); });
+    document.addEventListener('cr-pdf-jump-ready', ({ detail }) => flash(detail.id));
+  }
 
   // ---------- start ----------
   (async () => {
     await load();
     restorePending();
-    if (highlights.length && !highlights.every(isPlaced)) watchForLateContent();
+    if (!pdfMode && highlights.length && !highlights.every(isPlaced)) watchForLateContent();
+    if (pdfMode) {
+      setEnabled(true);
+      if (new URLSearchParams(location.search).get('mode') === 'panel') togglePanel(true);
+    }
     updatePill();
     renderPanel();
   })();

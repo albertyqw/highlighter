@@ -299,6 +299,7 @@
     .row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
     .btn { padding: 6px 10px; border-radius: 7px; font: 500 12px/1 var(--sans); }
     .btn.primary { background: var(--accent); color: var(--on-accent); }
+    .btn:disabled { opacity: .5; cursor: default; }
     .btn.quiet { color: var(--muted); }
     .btn.quiet:hover { color: var(--ink); background: var(--bg); }
     .btn.danger:hover { color: #C0362C; background: var(--bg); }
@@ -318,7 +319,10 @@
     .count { color: var(--muted); }
     .close { margin-left: auto; padding: 2px 8px; border-radius: 6px; font: 18px/1 var(--sans); color: var(--muted); }
     .close:hover { color: var(--ink); background: var(--surface); }
-    .actions { display: flex; gap: 6px; padding: 0 12px 10px; border-bottom: 1px solid var(--rule); }
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; border-bottom: 1px solid var(--rule); }
+    .import-status { padding: 0 16px; margin: 8px 0; color: var(--muted); overflow-wrap: anywhere; }
+    .import-status:empty { display: none; }
+    .import-status a { color: var(--accent); }
     .list { flex: 1; overflow-y: auto; padding: 4px 16px 16px; }
     h3 { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; font: 600 12px/1.2 var(--sans); }
     h3::before { content: ''; width: 10px; height: 10px; border-radius: 3px; background: rgb(var(--c)); }
@@ -390,8 +394,9 @@
   const panelCount = h('span', { class: 'count' });
   const list = h('div', { class: 'list' });
   const copyBtn = h('button', {
-    class: 'btn primary', text: 'Copy as Markdown',
+    class: 'btn quiet', text: 'Copy as Markdown',
     onclick: async () => {
+      closePopover();
       const md = toMarkdown();
       try {
         await navigator.clipboard.writeText(md);
@@ -407,6 +412,44 @@
       setTimeout(() => (copyBtn.textContent = 'Copy as Markdown'), 1500);
     },
   });
+  const importStatus = h('p', { class: 'import-status', role: 'status', 'aria-live': 'polite' });
+  let importing = false;
+  const notionBtn = h('button', {
+    class: 'btn primary', text: 'Import to Notion',
+    onclick: async () => {
+      if (importing || !highlights.length) return;
+      closePopover(); // Flush a note that is still waiting for its save timer.
+      importing = true;
+      notionBtn.disabled = true;
+      notionBtn.textContent = 'Importing…';
+      importStatus.textContent = 'Sending this page’s highlights and notes to Notion…';
+      try {
+        const result = await chrome.runtime.sendMessage({
+          type: 'notion-import',
+          page: { title: document.title, url: location.href, items: highlights.map(({ text, note, color, pos }) => ({ text, note, color, pos })) },
+        });
+        if (!result) throw new Error('No response from the extension. Reload this page and try again.');
+        if (result.setup) {
+          await chrome.runtime.sendMessage({ type: 'notion-settings' });
+          importStatus.textContent = 'Connect Notion in the settings tab, then return here and import.';
+        } else {
+          importStatus.textContent = result.error || 'Imported. ';
+          if (result.url) {
+            const url = new URL(result.url);
+            if (url.protocol === 'https:' && (url.hostname === 'notion.so' || url.hostname.endsWith('.notion.so'))) {
+              importStatus.appendChild(h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', text: 'Open in Notion' }));
+            }
+          }
+        }
+      } catch (error) {
+        importStatus.textContent = `${error.message} Check Notion before retrying; the import may have completed.`;
+      } finally {
+        importing = false;
+        notionBtn.textContent = 'Import to Notion';
+        notionBtn.disabled = !highlights.length;
+      }
+    },
+  });
   const panel = h('aside', { class: 'panel', 'aria-label': 'Notes on this page', hidden: '' }, [
     h('header', {}, [
       h('h2', { text: 'Notes on this page' }),
@@ -414,19 +457,20 @@
       h('button', { class: 'close', 'aria-label': 'Close notes', text: '×', onclick: () => togglePanel(false) }),
     ]),
     h('div', { class: 'actions' }, [
+      notionBtn,
       copyBtn,
       h('button', {
-        class: 'btn quiet danger', text: 'Clear page',
-        onclick: () => {
-          if (!highlights.length || !confirm('Remove every highlight and note on this page?')) return;
-          highlights.forEach((x) => unwrap(x.id));
-          highlights = [];
-          save();
-          renderPanel();
-          updatePill();
+        class: 'btn quiet', text: 'Notion settings',
+        onclick: async () => {
+          try {
+            await chrome.runtime.sendMessage({ type: 'notion-settings' });
+          } catch {
+            importStatus.textContent = 'Reload this page to reconnect to the extension.';
+          }
         },
       }),
     ]),
+    importStatus,
     list,
     h('footer', { class: 'keys' }, [
       ...COLORS.map((c, i) => h('span', { class: 'k', style: `--c:${c.rgb}` }, [h('i'), document.createTextNode(`${i + 1} ${c.label}`)])),
@@ -499,6 +543,8 @@
 
   function renderPanel() {
     panelCount.textContent = String(highlights.length);
+    notionBtn.disabled = importing || !highlights.length;
+    copyBtn.disabled = !highlights.length;
     if (!panelOpen) return;
     list.replaceChildren();
     if (!highlights.length) {

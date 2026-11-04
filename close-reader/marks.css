@@ -23,3 +23,21 @@ mark.cr-mark.cr-flash {
   outline: 2px solid rgb(var(--cr-c));
   outline-offset: 2px;
 }
+
+/* Reserve space for rolling notes so article text reflows beside the panel. */
+@media (min-width: 760px) {
+  html.cr-panel-open {
+    width: calc(100% - min(380px, 42vw)) !important;
+    min-width: 0 !important;
+  }
+  html.cr-panel-open body,
+  html.cr-panel-open main,
+  html.cr-panel-open article {
+    width: auto !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+}
+@media (max-width: 759px) {
+  html.cr-panel-open { padding-bottom: 45dvh !important; }
+}

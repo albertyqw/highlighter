@@ -305,12 +305,12 @@
     .btn.danger:hover { color: #C0362C; background: var(--bg); }
 
     .pill { right: 16px; bottom: 16px; display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 12px; border-radius: 999px; font: 500 12px/1 var(--sans); }
-    .root.panel-open .pill { right: calc(min(380px, 92vw) + 16px); }
+    .root.panel-open .pill { right: calc(min(380px, 42vw) + 16px); }
     .dot { width: 10px; height: 10px; border-radius: 50%;
       background: conic-gradient(rgb(255 214 10) 0 20%, rgb(255 159 28) 0 40%, rgb(78 168 222) 0 60%, rgb(82 183 136) 0 80%, rgb(255 112 166) 0); }
     .pill .btn { background: var(--bg); }
 
-    .panel { position: fixed; top: 0; right: 0; height: 100vh; width: min(380px, 92vw); display: flex; flex-direction: column;
+    .panel { position: fixed; top: 0; right: 0; height: 100dvh; width: min(380px, 42vw); display: flex; flex-direction: column;
       background: var(--bg); border-left: 1px solid var(--rule); box-shadow: -10px 0 30px rgb(15 20 35 / .12); }
     @media (prefers-reduced-motion: no-preference) { .panel { animation: in .18s ease-out; } }
     @keyframes in { from { transform: translateX(16px); opacity: 0; } }
@@ -323,6 +323,22 @@
     .import-status { padding: 0 16px; margin: 8px 0; color: var(--muted); overflow-wrap: anywhere; }
     .import-status:empty { display: none; }
     .import-status a { color: var(--accent); }
+    .import-fields { padding: 10px 16px; margin: 0; border: 0; border-bottom: 1px solid var(--rule); max-height: 36dvh; overflow-y: auto; flex-shrink: 0; min-width: 0; }
+    .import-fields label { display: block; margin-bottom: 8px; font-size: 12px; }
+    .import-fields input:not([type="checkbox"]) { display: block; width: 100%; margin-top: 4px; padding: 6px 8px; box-sizing: border-box; font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; }
+    .import-fields input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .import-fields small { display: block; color: var(--muted); font-size: 11px; }
+    .choices { margin-top: 8px; background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; }
+    .choices summary { padding: 6px 8px; cursor: pointer; }
+    .choice-list { max-height: 150px; overflow: auto; padding: 4px 8px; }
+    .choice-list label { display: flex; align-items: center; gap: 6px; padding: 3px 0; margin: 0; }
+    .import-status { max-height: 18dvh; overflow-y: auto; flex-shrink: 0; }
+    @media (max-width: 759px) {
+      .panel { top: auto; bottom: 0; height: 45dvh; width: 100%; border-top: 1px solid var(--rule); }
+      .root.panel-open .pill { right: 16px; bottom: calc(45dvh + 16px); }
+      .import-fields { max-height: 18dvh; }
+      .panel footer { display: none; }
+    }
     .list { flex: 1; overflow-y: auto; padding: 4px 16px 16px; }
     h3 { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; font: 600 12px/1.2 var(--sans); }
     h3::before { content: ''; width: 10px; height: 10px; border-radius: 3px; background: rgb(var(--c)); }
@@ -414,19 +430,83 @@
   });
   const importStatus = h('p', { class: 'import-status', role: 'status', 'aria-live': 'polite' });
   let importing = false;
+  let contextLoading = false;
+  let notionContext = null;
+  const metadata = CloseReaderArticle.extract(document);
+  const articleTitle = h('input', { type: 'text', 'aria-label': 'Article title' });
+  articleTitle.value = metadata.title;
+  const publicationDate = h('input', { type: 'date', 'aria-label': 'Publication date' });
+  publicationDate.value = metadata.publishedDate;
+  const dateHint = h('small', { text: metadata.publishedDate ? 'Detected from the article. Please verify.' : 'Publication date not found. Enter it before importing.' });
+  const selected = { topics: new Set(), projects: new Set() };
+  const dropdowns = {};
+  function choices(key, label) {
+    const summary = h('summary', { text: label });
+    const options = h('div', { class: 'choice-list', text: 'Connect Notion to load choices.' });
+    dropdowns[key] = { summary, options, label };
+    return h('details', { class: 'choices' }, [summary, options]);
+  }
+  const importFields = h('fieldset', { class: 'import-fields', 'aria-label': 'Reads article details' }, [
+    h('label', {}, [document.createTextNode('Article title'), articleTitle]),
+    h('label', {}, [document.createTextNode('Publication date'), publicationDate, dateHint]),
+    choices('topics', 'Topic tags'), choices('projects', 'Projects'),
+  ]);
+  async function loadNotionChoices() {
+    if (contextLoading || importing) return;
+    contextLoading = true;
+    notionBtn.disabled = true;
+    importStatus.textContent = 'Loading Reads topics and projects…';
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'notion-context' });
+      notionContext = result?.context || null;
+      if (!notionContext) {
+        importStatus.textContent = result?.error || 'Open Notion settings to connect your Reads database.';
+        return;
+      }
+      for (const key of ['topics', 'projects']) {
+        const { summary, options, label } = dropdowns[key];
+        const available = notionContext.fields[key].options;
+        selected[key] = new Set([...selected[key]].filter(id => available.some(option => option.id === id)));
+        summary.textContent = `${label} (${selected[key].size} selected)`;
+        options.replaceChildren();
+        if (!available.length) options.textContent = `No existing ${label.toLowerCase()} in Reads.`;
+        for (const option of available) {
+          const input = h('input', { type: 'checkbox', value: option.id, onchange: () => {
+            if (input.checked) selected[key].add(option.id); else selected[key].delete(option.id);
+            summary.textContent = `${label} (${selected[key].size} selected)`;
+          } });
+          input.checked = selected[key].has(option.id);
+          options.appendChild(h('label', {}, [input, document.createTextNode(option.name)]));
+        }
+      }
+      importStatus.textContent = 'Destination: Reads. Review the title and publication date before importing.';
+    } catch {
+      notionContext = null;
+      importStatus.textContent = 'Could not load Reads. Reload the page or check Notion settings.';
+    } finally {
+      contextLoading = false;
+      notionBtn.disabled = !highlights.length || !notionContext;
+    }
+  }
   const notionBtn = h('button', {
     class: 'btn primary', text: 'Import to Notion',
     onclick: async () => {
-      if (importing || !highlights.length) return;
+      if (importing || !highlights.length || !notionContext) return;
+      if (!articleTitle.value.trim() || !CloseReaderArticle.dateOnly(publicationDate.value)) {
+        importStatus.textContent = 'Enter the article title and explicit publication date before importing.';
+        (!articleTitle.value.trim() ? articleTitle : publicationDate).focus();
+        return;
+      }
       closePopover(); // Flush a note that is still waiting for its save timer.
       importing = true;
+      importFields.disabled = true;
       notionBtn.disabled = true;
       notionBtn.textContent = 'Importing…';
       importStatus.textContent = 'Sending this page’s highlights and notes to Notion…';
       try {
         const result = await chrome.runtime.sendMessage({
           type: 'notion-import',
-          page: { title: document.title, url: location.href, items: highlights.map(({ text, note, color, pos }) => ({ text, note, color, pos })) },
+          page: { title: articleTitle.value.trim(), publishedDate: publicationDate.value, topics: [...selected.topics], projects: [...selected.projects], url: location.href, items: highlights.map(({ text, note, color, pos }) => ({ text, note, color, pos })) },
         });
         if (!result) throw new Error('No response from the extension. Reload this page and try again.');
         if (result.setup) {
@@ -436,7 +516,7 @@
           importStatus.textContent = result.error || 'Imported. ';
           if (result.url) {
             const url = new URL(result.url);
-            if (url.protocol === 'https:' && (url.hostname === 'notion.so' || url.hostname.endsWith('.notion.so'))) {
+            if (url.protocol === 'https:' && (url.hostname === 'notion.so' || url.hostname.endsWith('.notion.so') || url.hostname.endsWith('.notion.com'))) {
               importStatus.appendChild(h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', text: 'Open in Notion' }));
             }
           }
@@ -445,6 +525,7 @@
         importStatus.textContent = `${error.message} Check Notion before retrying; the import may have completed.`;
       } finally {
         importing = false;
+        importFields.disabled = false;
         notionBtn.textContent = 'Import to Notion';
         notionBtn.disabled = !highlights.length;
       }
@@ -469,7 +550,9 @@
           }
         },
       }),
+      h('button', { class: 'btn quiet', text: 'Refresh Notion choices', onclick: () => loadNotionChoices() }),
     ]),
+    importFields,
     importStatus,
     list,
     h('footer', { class: 'keys' }, [
@@ -538,12 +621,14 @@
     panelOpen = typeof force === 'boolean' ? force : !panelOpen;
     panel.hidden = !panelOpen;
     root.classList.toggle('panel-open', panelOpen);
+    document.documentElement.classList.toggle('cr-panel-open', panelOpen);
     renderPanel();
+    if (panelOpen) loadNotionChoices();
   }
 
   function renderPanel() {
     panelCount.textContent = String(highlights.length);
-    notionBtn.disabled = importing || !highlights.length;
+    notionBtn.disabled = importing || contextLoading || !notionContext || !highlights.length;
     copyBtn.disabled = !highlights.length;
     if (!panelOpen) return;
     list.replaceChildren();

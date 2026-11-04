@@ -5,24 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Close Reader — Notion settings</title>
   <link rel="stylesheet" href="options.css">
+  <script src="article.js" defer></script>
   <script src="notion.js" defer></script>
   <script src="options.js" defer></script>
 </head>
 <body>
   <main>
-    <h1>Import your notes to Notion</h1>
-    <p>Choose a destination once, then use <strong>Import to Notion</strong> in any page’s notes panel.</p>
+    <h1>Import your notes to Reads</h1>
+    <p>Connect your Reads database once, then choose topics and projects in any page’s notes panel.</p>
     <ol>
       <li>Create an internal connection in <a href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener noreferrer">Notion’s connection settings</a> with <strong>Read content</strong> and <strong>Insert content</strong> capabilities. Copy its token.</li>
-      <li>Open the Notion page you want to collect notes under. In its <strong>••• → Connections</strong> menu, add that connection.</li>
-      <li>Paste the token and destination page link below. Use a regular page as the destination.</li>
+      <li>Open your <strong>Reads database</strong>. In its <strong>••• → Connections</strong> menu, add that connection.</li>
+      <li>Paste the token below. Close Reader finds Reads automatically. You can paste the database link to choose a specific Reads database.</li>
     </ol>
     <form id="connection">
       <label for="token">Connection token</label>
       <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your Notion connection token">
-      <label for="page">Destination page link or ID</label>
-      <input id="page" type="text" required autocomplete="off" spellcheck="false" placeholder="https://www.notion.so/…">
-      <p class="help">The token is saved in this browser’s local extension storage, not synced. Local storage is not encrypted. Notes are sent directly to Notion only when you click Import. Each click creates a new page with the source link, grouped highlights, and notes.</p>
+      <label for="page">Reads database link or ID (optional)</label>
+      <input id="page" type="text" autocomplete="off" spellcheck="false" placeholder="Leave blank to find Reads automatically">
+      <p class="help">Reads needs a title property, a Date property, and multi-select properties named Topic Tags and Project. Existing choices are loaded from Notion; no tags are created.</p>
+      <p class="help">The token is saved locally in this browser, not encrypted or synced. Opening the notes panel loads the available choices. Notes are sent directly to Notion when you click Import. Each import creates a new Reads page.</p>
       <div class="actions">
         <button id="save" type="submit">Save connection</button>
         <button id="disconnect" type="button" class="secondary">Disconnect</button>

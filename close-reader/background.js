@@ -1,5 +1,5 @@
 // Routes the toolbar button and keyboard shortcuts to the page.
-importScripts('notion.js');
+importScripts('article.js', 'notion.js');
 
 chrome.action.setBadgeBackgroundColor({ color: '#2F4A7A' });
 
@@ -31,7 +31,18 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     chrome.runtime.openOptionsPage().then(() => reply({ ok: true }), () => reply({ error: 'Could not open Notion settings.' }));
     return true;
   }
-  if (message.type !== 'notion-import' || !sender.tab) return;
+  if (!['notion-import', 'notion-context'].includes(message.type) || !sender.tab) return;
+  if (message.type === 'notion-context') {
+    (async () => {
+      try {
+        const { notionConnection } = await chrome.storage.local.get('notionConnection');
+        if (!notionConnection?.token) return reply({ setup: true });
+        const context = await CloseReaderNotion.resolveReads(notionConnection);
+        reply({ context });
+      } catch (error) { reply({ error: error.message }); }
+    })();
+    return true;
+  }
   const key = sender.tab.id;
   if (importing.has(key)) {
     reply({ error: 'An import is already running for this tab.' });
@@ -41,7 +52,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   (async () => {
     try {
       const { notionConnection } = await chrome.storage.local.get('notionConnection');
-      if (!notionConnection?.token || !notionConnection?.pageId) {
+      if (!notionConnection?.token) {
         reply({ setup: true });
         return;
       }

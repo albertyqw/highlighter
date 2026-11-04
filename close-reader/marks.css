@@ -1,0 +1,25 @@
+/* Highlight marks injected into the page. Colours are RGB triples so alpha can vary. */
+mark.cr-mark {
+  --cr-c: 255 214 10;
+  background-color: rgb(var(--cr-c) / 0.42) !important;
+  color: inherit !important;
+  padding: 0 !important;
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+mark.cr-mark[data-cr-color="yellow"] { --cr-c: 255 214 10; }
+mark.cr-mark[data-cr-color="orange"] { --cr-c: 255 159 28; }
+mark.cr-mark[data-cr-color="blue"]   { --cr-c: 78 168 222; }
+mark.cr-mark[data-cr-color="green"]  { --cr-c: 82 183 136; }
+mark.cr-mark[data-cr-color="pink"]   { --cr-c: 255 112 166; }
+
+/* A solid underline marks highlights that carry a note. */
+mark.cr-mark.cr-has-note { box-shadow: inset 0 -2px 0 rgb(var(--cr-c)); }
+
+html.cr-on mark.cr-mark { cursor: pointer; }
+
+mark.cr-mark.cr-flash {
+  outline: 2px solid rgb(var(--cr-c));
+  outline-offset: 2px;
+}

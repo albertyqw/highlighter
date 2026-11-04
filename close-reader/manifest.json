@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Close Reader",
+  "version": "0.1.0",
+  "description": "Five-colour highlighting and notes for reading on the web.",
+  "permissions": ["storage"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Close Reader: turn highlighting on or off (Alt+Shift+H)" },
+  "commands": {
+    "toggle-highlighter": {
+      "suggested_key": { "default": "Alt+Shift+H" },
+      "description": "Turn highlighting on or off"
+    },
+    "toggle-panel": {
+      "suggested_key": { "default": "Alt+Shift+N" },
+      "description": "Show or hide the notes panel"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["marks.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -146,3 +146,34 @@ test('PDF exports keep page references and do not send local file paths', () => 
   assert.equal(remote[0].paragraph.rich_text[0].text.link.url, 'https://example.com/paper.pdf');
   assert.match(text(remote[2]), /PDF page 2/);
 });
+
+test('uploads screenshot-only notes as hosted Notion images with captions and PDF references', async () => {
+  const mock = mockNotion();
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push({ url, ...options });
+    if (url.endsWith('/file_uploads')) return ok({ id: 'file-one', status: 'pending' });
+    if (url.endsWith('/file_uploads/file-one/send')) return ok({ id: 'file-one', status: 'uploaded' });
+    return mock.fetcher(url, options);
+  };
+  const result = await importNotes(connection, { ...page([]), kind: 'pdf', screenshots: [{ blob: new Blob(['png'], { type: 'image/png' }), caption: 'Figure 2: cooperation rates', pdfPage: 3 }] }, fetcher);
+  assert.equal(result.url, 'https://www.notion.so/imported');
+  const upload = calls.find(call => call.url.endsWith('/send'));
+  assert.ok(upload.body instanceof FormData);
+  assert.equal(upload.headers['Content-Type'], undefined);
+  assert.equal(upload.body.get('file').type, 'image/png');
+  const image = mock.calls.filter(call => call.method === 'PATCH').flatMap(call => call.body.children).find(block => block.type === 'image');
+  assert.deepEqual(image.image.file_upload, { id: 'file-one' });
+  assert.match(image.image.caption[0].text.content, /Figure 2.*PDF page 3/);
+});
+
+test('screenshot upload failure preserves text already imported and links to the partial page', async () => {
+  const mock = mockNotion();
+  const result = await importNotes(connection, { ...page(), screenshots: [{ blob: new Blob(['png'], { type: 'image/png' }) }] }, async (url, options) => {
+    if (url.endsWith('/file_uploads')) return { ok: false, status: 403, json: async () => ({}) };
+    return mock.fetcher(url, options);
+  });
+  assert.equal(result.url, 'https://www.notion.so/imported');
+  assert.match(result.error, /incomplete/);
+  assert.ok(mock.calls.some(call => call.method === 'PATCH'));
+});

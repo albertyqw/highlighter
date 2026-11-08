@@ -22,6 +22,7 @@
   let enabled = false;
   let panelOpen = false;
   let highlights = [];
+  let screenshots = [];
   let activeId = null;
 
   const uid = () =>
@@ -263,6 +264,15 @@
         lines.push('');
       }
     }
+    if (screenshots.length) {
+      lines.push('', '## Screenshots', '');
+      screenshots.forEach((shot, index) => {
+        lines.push(`![Screenshot ${index + 1}](close-reader-screenshot-${shot.id}.png)`);
+        if (shot.caption) lines.push('', shot.caption);
+        if (shot.pdfPage) lines.push('', `PDF page ${shot.pdfPage}`);
+        lines.push('');
+      });
+    }
     return lines.join('\n');
   }
 
@@ -341,6 +351,16 @@
     .import-status { padding: 0 16px; margin: 8px 0; color: var(--muted); overflow-wrap: anywhere; }
     .import-status:empty { display: none; }
     .import-status a { color: var(--accent); }
+    .capture-card { padding: 10px; margin: 8px 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+    .capture-card img { display: block; width: 100%; max-height: 220px; object-fit: contain; background: white; border-radius: 4px; }
+    .capture-card textarea { min-height: 54px; font: 12px/1.4 var(--sans); }
+    .capture-card .row { flex-wrap: wrap; gap: 4px; }
+    .capture-section h3::before { background: var(--accent); }
+    .capture-screen { position: fixed; inset: 0; z-index: 2147483647; cursor: crosshair; background: #0002; user-select: none; touch-action: none; font: 14px/1.4 system-ui, sans-serif; color: #fff; }
+    .capture-help { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px; padding: 12px 16px; width: max-content; max-width: 90vw; background: #1c2230; border-radius: 10px; box-shadow: 0 3px 16px #0004; }
+    .capture-help button { padding: 6px 9px; background: #fff; color: #1c2230; border-radius: 5px; cursor: pointer; }
+    .capture-help button:focus-visible { outline: 2px solid #9db6e8; outline-offset: 2px; }
+    .capture-box { position: fixed; border: 2px solid #fff; outline: 1px solid #2f4a7a; background: #9db6e81a; pointer-events: none; }
     .import-fields { padding: 10px 16px; margin: 0; border: 0; border-bottom: 1px solid var(--rule); max-height: 36dvh; overflow-y: auto; flex-shrink: 0; min-width: 0; }
     .import-fields label { display: block; margin-bottom: 8px; font-size: 12px; }
     .import-fields input:not([type="checkbox"]) { display: block; width: 100%; margin-top: 4px; padding: 6px 8px; box-sizing: border-box; font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; }
@@ -447,6 +467,105 @@
     },
   });
   const importStatus = h('p', { class: 'import-status', role: 'status', 'aria-live': 'polite' });
+  const captureStatus = h('p', { class: 'import-status', role: 'status', 'aria-live': 'polite' });
+  let captionWrites = Promise.resolve();
+  async function screenshotRequest(type, fields = {}) {
+    const result = await chrome.runtime.sendMessage({ type: 'screenshots-' + type, pageKey: storageKey, ...fields });
+    if (!result) throw new Error('No response from the extension. Reload the extension and this tab.');
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+  async function loadScreenshots() {
+    try {
+      screenshots = (await screenshotRequest('list')).screenshots || [];
+      renderPanel(); updatePill();
+    } catch (error) { captureStatus.textContent = error.message; }
+  }
+  function appendScreenshots() {
+    if (!screenshots.length) return;
+    const section = h('section', { class: 'capture-section' }, [h('h3', { text: `Screenshots (${screenshots.length})` })]);
+    screenshots.forEach((shot, index) => {
+      const caption = h('textarea', { 'aria-label': `Screenshot caption ${index + 1}`, placeholder: 'Add a caption or note', maxlength: '2000', oninput: () => {
+        shot.caption = caption.value.slice(0, 2000);
+        captionWrites = captionWrites.catch(() => {}).then(() => screenshotRequest('update', { id: shot.id, caption: shot.caption }));
+        captionWrites.catch(error => { captureStatus.textContent = error.message; });
+      } });
+      caption.value = shot.caption || ''; caption.disabled = importing;
+      section.appendChild(h('div', { class: 'capture-card' }, [
+        h('img', { src: shot.thumbnail, alt: `Screenshot ${index + 1}${shot.pdfPage ? `, PDF page ${shot.pdfPage}` : ''}` }), caption,
+        shot.pdfPage ? h('div', { class: 'missing', text: `PDF page ${shot.pdfPage}` }) : null,
+        h('div', { class: 'row' }, [
+          h('button', { class: 'btn quiet', text: 'Download PNG', onclick: async () => {
+            try {
+              const result = await screenshotRequest('read', { id: shot.id });
+              const link = h('a', { href: result.dataUrl, download: `close-reader-screenshot-${shot.id}.png` });
+              root.append(link); link.click(); link.remove();
+            } catch (error) { captureStatus.textContent = error.message; }
+          } }),
+          h('button', { class: 'btn quiet danger', text: 'Remove screenshot', onclick: async () => {
+            if (importing) return;
+            try {
+              await captionWrites;
+              await screenshotRequest('remove', { id: shot.id });
+              screenshots = screenshots.filter(item => item.id !== shot.id); renderPanel(); updatePill();
+            } catch (error) { captureStatus.textContent = error.message; }
+          } }),
+        ]),
+      ]));
+    });
+    list.appendChild(section);
+  }
+  let capturing = false;
+  function startScreenshot() {
+    if (capturing || importing) return;
+    closePopover(); hidePalette(); capturing = true;
+    const previousFocus = shadow.activeElement || document.activeElement;
+    const selection = h('div', { class: 'capture-box', hidden: '' });
+    let start, taking = false;
+    const restore = () => { layer.remove(); root.hidden = false; capturing = false; previousFocus?.focus?.({ preventScroll: true }); };
+    const cancel = () => { restore(); captureStatus.textContent = 'Screenshot cancelled.'; };
+    const take = async rect => {
+      if (taking) return;
+      taking = true;
+      const viewport = { width: innerWidth, height: innerHeight };
+      layer.hidden = true;
+      const center = rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : { x: innerWidth / 2, y: innerHeight / 2 };
+      const pdfPage = pdfMode ? Number(document.elementFromPoint(center.x, center.y)?.closest('[data-pdf-page]')?.dataset.pdfPage) || undefined : undefined;
+      try {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const tabId = pdfMode ? (await chrome.tabs.getCurrent())?.id : undefined;
+        await screenshotRequest('capture', { rect, viewport, pdfPage, tabId });
+        restore();
+        await loadScreenshots();
+        togglePanel(true); list.scrollTop = list.scrollHeight;
+        captureStatus.textContent = 'Screenshot saved. Add a caption below; it will be included in your Notion import.';
+      } catch (error) { restore(); captureStatus.textContent = error.message; togglePanel(true); }
+    };
+    const layer = h('div', { class: 'capture-screen', role: 'dialog', 'aria-label': 'Capture screenshot', 'aria-modal': 'true', tabindex: '0', onkeydown: event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel(); }
+      else if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) event.preventDefault();
+    }, onpointerdown: event => {
+      if (event.target.closest('button')) return;
+      event.preventDefault(); start = { x: event.clientX, y: event.clientY };
+      layer.setPointerCapture(event.pointerId); selection.hidden = false;
+      selection.style.cssText = `left:${start.x}px;top:${start.y}px;width:0;height:0`;
+    }, onpointermove: event => {
+      if (!start) return;
+      selection.style.cssText = `left:${Math.min(start.x, event.clientX)}px;top:${Math.min(start.y, event.clientY)}px;width:${Math.abs(start.x - event.clientX)}px;height:${Math.abs(start.y - event.clientY)}px`;
+    }, onpointerup: event => {
+      if (!start) return;
+      const rect = { x: Math.min(start.x, event.clientX), y: Math.min(start.y, event.clientY), width: Math.abs(start.x - event.clientX), height: Math.abs(start.y - event.clientY) };
+      start = null;
+      if (rect.width < 8 || rect.height < 8) { selection.hidden = true; return; }
+      event.preventDefault(); take(rect);
+    } }, [
+      h('div', { class: 'capture-help' }, [document.createTextNode('Drag around a figure or area · Esc to cancel'),
+        h('button', { text: 'Capture visible page', onclick: () => take(null) }), h('button', { text: 'Cancel', onclick: cancel }),
+      ]), selection,
+    ]);
+    layer.addEventListener('wheel', event => event.preventDefault(), { passive: false });
+    root.hidden = true; shadow.appendChild(layer); layer.focus();
+  }
   let importing = false;
   let contextLoading = false;
   let notionContext = null;
@@ -460,6 +579,7 @@
   const publicationDate = h('input', { type: 'date', 'aria-label': 'Publication date' });
   publicationDate.value = metadata.publishedDate;
   const dateHint = h('small', { text: metadata.publishedDate ? 'Detected from the article. Please verify.' : 'Publication date not found. Enter it before importing.' });
+  publicationDate.addEventListener('input', () => { dateHint.textContent = CloseReaderArticle.dateOnly(publicationDate.value) ? 'Publication date entered. Please verify it matches the source.' : 'Enter the publication date before importing.'; });
   const selected = { topics: new Set(), projects: new Set() };
   const dropdowns = {};
   function choices(key, label) {
@@ -482,7 +602,7 @@
       const result = await chrome.runtime.sendMessage({ type: 'notion-context' });
       notionContext = result?.context || null;
       if (!notionContext) {
-        importStatus.textContent = result?.error || 'Open Notion settings to connect your Reads database.';
+        importStatus.textContent = result?.setup ? 'This extension has no saved Notion token. Open Notion settings to connect Reads. Connecting Notion in Codex does not connect the browser extension.' : result?.error || 'Could not check the Notion connection. Reload the extension and this PDF/article tab, then refresh Notion choices.';
         return;
       }
       for (const key of ['topics', 'projects']) {
@@ -507,13 +627,13 @@
       importStatus.textContent = 'Could not load Reads. Reload the page or check Notion settings.';
     } finally {
       contextLoading = false;
-      notionBtn.disabled = !highlights.length || !notionContext;
+      notionBtn.disabled = (!highlights.length && !screenshots.length) || !notionContext;
     }
   }
   const notionBtn = h('button', {
     class: 'btn primary', text: 'Import to Notion',
     onclick: async () => {
-      if (importing || !highlights.length || !notionContext) return;
+      if (importing || (!highlights.length && !screenshots.length) || !notionContext) return;
       if (!articleTitle.value.trim() || !CloseReaderArticle.dateOnly(publicationDate.value)) {
         importStatus.textContent = 'Enter the article title and explicit publication date before importing.';
         (!articleTitle.value.trim() ? articleTitle : publicationDate).focus();
@@ -522,13 +642,15 @@
       closePopover(); // Flush a note that is still waiting for its save timer.
       importing = true;
       importFields.disabled = true;
+      list.querySelectorAll('.capture-card textarea').forEach(input => { input.disabled = true; });
       notionBtn.disabled = true;
       notionBtn.textContent = 'Importing…';
       importStatus.textContent = 'Sending this page’s highlights and notes to Notion…';
       try {
+        await captionWrites;
         const result = await chrome.runtime.sendMessage({
           type: 'notion-import',
-          page: { title: articleTitle.value.trim(), publishedDate: publicationDate.value, topics: [...selected.topics], projects: [...selected.projects], url: sourceUrl, ...(pdfMode ? { kind: 'pdf', sourceName } : {}), items: highlights.map(({ text, note, color, pos, pdfPage }) => ({ text, note, color, pos, ...(pdfPage ? { pdfPage } : {}) })) },
+          page: { title: articleTitle.value.trim(), publishedDate: publicationDate.value, topics: [...selected.topics], projects: [...selected.projects], url: sourceUrl, captureKey: storageKey, screenshots: screenshots.map(({ id }) => ({ id })), ...(pdfMode ? { kind: 'pdf', sourceName } : {}), items: highlights.map(({ text, note, color, pos, pdfPage }) => ({ text, note, color, pos, ...(pdfPage ? { pdfPage } : {}) })) },
         });
         if (!result) throw new Error('No response from the extension. Reload this page and try again.');
         if (result.setup) {
@@ -548,8 +670,9 @@
       } finally {
         importing = false;
         importFields.disabled = false;
+        list.querySelectorAll('.capture-card textarea').forEach(input => { input.disabled = false; });
         notionBtn.textContent = 'Import to Notion';
-        notionBtn.disabled = !highlights.length;
+        notionBtn.disabled = !highlights.length && !screenshots.length;
       }
     },
   });
@@ -562,6 +685,7 @@
     h('div', { class: 'actions' }, [
       notionBtn,
       copyBtn,
+      h('button', { class: 'btn quiet', text: 'Screenshot', title: 'Capture an area or visible page (Alt/Option + Shift + S)', onclick: startScreenshot }),
       h('button', {
         class: 'btn quiet', text: 'Notion settings',
         onclick: async () => {
@@ -576,6 +700,7 @@
     ]),
     importFields,
     importStatus,
+    captureStatus,
     list,
     h('footer', { class: 'keys' }, [
       ...COLORS.map((c, i) => h('span', { class: 'k', style: `--c:${c.rgb}` }, [h('i'), document.createTextNode(`${i + 1} ${c.label}`)])),
@@ -636,7 +761,7 @@
 
   function updatePill() {
     pill.hidden = !enabled;
-    pillCount.textContent = String(highlights.length);
+    pillCount.textContent = String(highlights.length + screenshots.length);
   }
 
   function togglePanel(force) {
@@ -649,12 +774,12 @@
   }
 
   function renderPanel() {
-    panelCount.textContent = String(highlights.length);
-    notionBtn.disabled = importing || contextLoading || !notionContext || !highlights.length;
-    copyBtn.disabled = !highlights.length;
+    panelCount.textContent = String(highlights.length + screenshots.length);
+    notionBtn.disabled = importing || contextLoading || !notionContext || (!highlights.length && !screenshots.length);
+    copyBtn.disabled = !highlights.length && !screenshots.length;
     if (!panelOpen) return;
     list.replaceChildren();
-    if (!highlights.length) {
+    if (!highlights.length && !screenshots.length) {
       list.appendChild(h('p', { class: 'empty', text: 'Nothing highlighted yet. Turn highlighting on, select text, then press 1 to 5.' }));
       return;
     }
@@ -678,6 +803,7 @@
       }
       list.appendChild(section);
     }
+    appendScreenshots();
   }
 
   function setEnabled(v) {
@@ -733,14 +859,15 @@
   addEventListener('scroll', hidePalette, { passive: true, capture: true });
 
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
-    if (msg.type === 'toggle') setEnabled(!enabled);
-    else if (msg.type === 'panel') togglePanel();
-    reply({ enabled });
+    return CloseReaderMessaging.pageMessage(msg, {
+      toggle: () => setEnabled(!enabled), panel: () => togglePanel(), screenshot: startScreenshot, enabled: () => enabled,
+    }, reply);
   });
   if (pdfMode) {
     document.addEventListener('cr-pdf-command', ({ detail }) => {
       if (detail.type === 'toggle') setEnabled(!enabled);
       else if (detail.type === 'panel') togglePanel();
+      else if (detail.type === 'screenshot') startScreenshot();
     });
     document.addEventListener('cr-pdf-before-render', closePopover);
     document.addEventListener('cr-pdf-page-rendered', () => { restorePending(); renderPanel(); });
@@ -758,5 +885,6 @@
     }
     updatePill();
     renderPanel();
+    loadScreenshots();
   })();
 })();

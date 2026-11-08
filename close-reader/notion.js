@@ -31,12 +31,13 @@ const CloseReaderNotion = (() => {
   }
 
   async function request(token, path, method, body, fetcher = fetch) {
+    const multipart = typeof FormData !== 'undefined' && body instanceof FormData;
     let response;
     try {
       response = await fetcher('https://api.notion.com/v1/' + path, {
         method, signal: AbortSignal.timeout(25000),
-        headers: { Authorization: `Bearer ${token}`, 'Notion-Version': '2026-03-11', 'Content-Type': 'application/json' },
-        ...(body ? { body: JSON.stringify(body) } : {}),
+        headers: { Authorization: `Bearer ${token}`, 'Notion-Version': '2026-03-11', ...(!multipart ? { 'Content-Type': 'application/json' } : {}) },
+        ...(body ? { body: multipart ? body : JSON.stringify(body) } : {}),
       });
     } catch {
       throw new Error('Could not reach Notion. Check Notion before retrying an import; a write may have completed.');
@@ -116,7 +117,7 @@ const CloseReaderNotion = (() => {
   }
 
   function blocksFor(page) {
-    if (!page || !Array.isArray(page.items) || !page.items.length) throw new Error('Highlight something before importing.');
+    if (!page || !Array.isArray(page.items) || (!page.items.length && !page.screenshots?.length)) throw new Error('Highlight something or take a screenshot before importing.');
     const localPdf = page.kind === 'pdf' && !page.url && typeof page.sourceName === 'string' && page.sourceName.trim();
     if (!localPdf) {
       const url = new URL(page.url);
@@ -189,7 +190,25 @@ const CloseReaderNotion = (() => {
         offset += children.length;
       }
     }
-    try { await append(created.id, blocks); }
+    try {
+      await append(created.id, blocks);
+      for (const [index, capture] of (page.screenshots || []).entries()) {
+        if (!capture.blob || capture.blob.type !== 'image/png' || capture.blob.size > 5 * 1024 * 1024) throw new Error('A screenshot is missing or too large to upload. Download it and try a smaller capture.');
+        const upload = await request(connection.token, 'file_uploads', 'POST', { mode: 'single_part', filename: `close-reader-${index + 1}.png`, content_type: 'image/png' }, fetcher);
+        const form = new FormData();
+        form.append('file', capture.blob, `close-reader-${index + 1}.png`);
+        let result = await request(connection.token, `file_uploads/${encodeURIComponent(upload.id)}/send`, 'POST', form, fetcher);
+        for (let attempt = 0; result.status === 'pending' && attempt < 5; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          result = await request(connection.token, `file_uploads/${encodeURIComponent(upload.id)}`, 'GET', undefined, fetcher);
+        }
+        if (result.status !== 'uploaded') throw new Error('Notion has not finished processing a screenshot. Check the page before retrying.');
+        const caption = [capture.caption, capture.pdfPage ? `PDF page ${capture.pdfPage}` : ''].filter(Boolean).join(' · ');
+        const image = { object: 'block', type: 'image', image: { type: 'file_upload', file_upload: { id: upload.id }, caption: caption ? chunks(caption).map(text => richText(text)[0]) : [] } };
+        await new Promise(resolve => setTimeout(resolve, 350));
+        await append(created.id, [...(index === 0 ? [block('heading_2', 'Screenshots')] : []), image]);
+      }
+    }
     catch (error) { return { url: created.url, error: `The Reads page was created, but the import is incomplete. ${error.message} Open it before retrying to avoid duplicates.` }; }
     return { url: created.url };
   }

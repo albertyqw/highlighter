@@ -28,6 +28,23 @@ Five-colour highlighting and notes for reading on the web. Works in Chrome, Arc,
 
 Highlights save per page and come back when you return. Change the shortcuts at `chrome://extensions/shortcuts`.
 
+## Screenshots and figures
+
+- Click **Screenshot** in the notes panel, then drag around a figure or area. Choose **Capture visible page** for the viewport, or **Esc/Cancel** to exit.
+- **Alt+Shift+S** (Option+Shift+S on Mac) also starts capture. Use this shortcut, or the extension icon's **Capture a screenshot for notes** context menu, if Chrome says capture access is needed. Chrome grants temporary capture access through those extension actions; a PDF reader's own page button cannot grant it.
+- Screenshots appear in the notes panel with an editable, automatically saved caption, **Download PNG**, and **Remove screenshot**. PDF captures include the page number when the selected area is on a PDF page.
+- Images are stored in the extension's local IndexedDB, independently of text notes, and restored when you revisit the article or PDF. They are not synced or uploaded until you click **Import to Notion**. Up to 30 screenshots can be attached to a source.
+- Notion imports include screenshots as uploaded image blocks with captions and PDF references. Screenshot-only notes can be imported too. If an image upload fails, the partial-page link lets you inspect the text already imported before trying again.
+- Markdown includes image links matching the **Download PNG** filenames. Download those PNGs alongside the Markdown when moving them to another editor; the image bytes are not copied into the Markdown clipboard text.
+
+Capture hides the extension's controls, uses the current visible tab, and supports high-DPI displays. Large images are reduced to keep PNG uploads below 5 MiB. Switching tabs during capture discards the image. Scrolling/full-document stitching is not included; capture another area after scrolling.
+
+## Updating an existing installation
+
+Replace the files inside the **same close-reader folder you originally loaded**, then click **Reload** for that extension in `chrome://extensions`. Loading a separate unpacked copy from another folder can create a separate extension identity with different notes and connection settings.
+
+After updating to 0.5.0, close and reopen all Close Reader PDF tabs so they use the corrected message handler. Existing saved highlights and screenshots stay in extension storage. This release fixes other PDF tabs answering Notion requests before the worker, which could disable Import and misleadingly suggest that the connection was missing. A genuinely missing token is now distinguished from an unavailable worker response. The browser extension's connection is separate from Notion connected inside Codex.
+
 ## PDFs in the browser
 
 1. Open a PDF in your browser and click Close Reader (or press **Alt+Shift+H**). A Close Reader PDF tab opens; highlighting starts automatically.

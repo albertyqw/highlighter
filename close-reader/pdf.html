@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Close Reader — PDF</title>
+  <link rel="stylesheet" href="vendor/pdfjs/text-layer.css">
+  <link rel="stylesheet" href="pdf.css">
+  <link rel="stylesheet" href="marks.css">
+  <script src="article.js" defer></script>
+  <script src="pdf-source.js" defer></script>
+  <script src="messaging.js" defer></script>
+  <script src="pdf-reader.mjs" type="module"></script>
+</head>
+<body>
+  <header class="pdf-toolbar" data-cr-ui>
+    <strong>Close Reader <span>PDF</span></strong>
+    <button id="toggle-highlight" disabled aria-pressed="false">Highlighting off</button>
+    <button id="toggle-notes" disabled>Notes</button>
+    <label>Zoom <select id="zoom" disabled><option value="fit">Fit width</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option></select></label>
+    <label>Page <input id="page-number" type="number" min="1" value="1" disabled> <span id="page-count"></span></label><button id="go-page" disabled>Go</button>
+    <a id="original" hidden target="_blank" rel="noopener noreferrer">Original PDF</a>
+    <a href="pdf.html">Open another PDF</a>
+  </header>
+  <section id="open-pdf" class="open-pdf" data-cr-ui>
+    <h1>Read and highlight a PDF</h1>
+    <p>Open a PDF link or choose a file from your computer. Highlights and notes stay in this browser; the original PDF is unchanged.</p>
+    <form id="url-form">
+      <label for="pdf-url">PDF link</label>
+      <div class="open-row"><input id="pdf-url" type="url" placeholder="https://…/paper.pdf"><button id="load-url" type="submit">Open PDF link</button></div>
+    </form>
+    <label class="file-label" for="pdf-file">Or choose a local PDF</label>
+    <input id="pdf-file" type="file" accept=".pdf,application/pdf">
+    <p class="help">The first time you open a site’s PDF, Chrome asks for access to that site. Local files need no site permission and are not uploaded.</p>
+  </section>
+  <p id="pdf-status" class="pdf-status" role="status" aria-live="polite" data-cr-ui></p>
+  <main id="pdf-pages" aria-label="PDF pages"></main>
+  <dialog id="password-dialog" data-cr-ui>
+    <form id="password-form">
+      <h2>Password-protected PDF</h2>
+      <label for="pdf-password">PDF password</label>
+      <input id="pdf-password" type="password" autocomplete="off" required>
+      <p id="password-hint"></p>
+      <div class="open-row"><button type="submit">Unlock PDF</button><button id="cancel-password" type="button">Cancel</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

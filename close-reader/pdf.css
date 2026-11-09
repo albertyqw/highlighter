@@ -1,0 +1,36 @@
+:root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; background: light-dark(#e8ecf2, #151922); color: light-dark(#1c2230, #e7eaf0); }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; }
+button { cursor: pointer; padding: 7px 10px; border: 1px solid light-dark(#c7d0de, #475065); border-radius: 6px; background: light-dark(#fff, #252c3b); color: inherit; }
+button:disabled, input:disabled, select:disabled { opacity: .5; cursor: default; }
+button[aria-pressed="true"], #load-url { background: #2f4a7a; color: white; }
+input, select { padding: 6px 8px; border: 1px solid #8892a2; border-radius: 5px; background: light-dark(#fff, #252c3b); color: inherit; }
+a { color: light-dark(#2f4a7a, #9db6e8); }
+:focus-visible { outline: 2px solid #648cd7; outline-offset: 3px; }
+[hidden] { display: none !important; }
+.pdf-toolbar { position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; background: light-dark(#f6f8fb, #1d2230); border-bottom: 1px solid light-dark(#c7d0de, #384153); }
+.pdf-toolbar strong { margin-right: auto; }
+.pdf-toolbar strong span { color: light-dark(#5b6476, #9aa3b5); font-weight: 400; }
+.pdf-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+#page-number { width: 62px; }
+.open-pdf { max-width: 640px; margin: 48px auto 16px; padding: 24px; background: light-dark(#fff, #1d2230); border-radius: 12px; }
+h1 { font-size: 24px; line-height: 1.3; margin-top: 0; }
+.open-row { display: flex; gap: 10px; margin: 6px 0 20px; flex-wrap: wrap; }
+#pdf-url { flex: 1; min-width: 180px; }
+.file-label { display: block; margin-bottom: 8px; }
+.help { font-size: 12px; color: light-dark(#5b6476, #9aa3b5); }
+.pdf-status { margin: 16px; text-align: center; overflow-wrap: anywhere; }
+.pdf-status:empty { display: none; }
+#pdf-pages { width: 100%; padding: 16px; }
+.pdf-page { width: fit-content; max-width: none; margin: 0 auto 24px; scroll-margin-top: 100px; position: relative; }
+.pdf-page-surface { background: white; box-shadow: 0 3px 18px #0002; position: relative; color-scheme: only light; }
+.pdf-page canvas { display: block; position: absolute; inset: 0; }
+.pdf-page .textLayer { z-index: 1; }
+.pdf-page mark { font: inherit; }
+.pdf-page-label { padding: 7px 0; text-align: center; font-size: 11px; color: light-dark(#5b6476, #9aa3b5); user-select: none; }
+.scan-note { position: absolute; bottom: 16px; left: 16px; right: 16px; padding: 8px; background: #fff3c4; color: #594000; font: 13px/1.5 system-ui, sans-serif; z-index: 2; }
+dialog { max-width: 420px; padding: 24px; border: 1px solid #8892a2; border-radius: 12px; }
+dialog::backdrop { background: #0006; }
+dialog input { width: 100%; margin-top: 8px; }
+@media (max-width: 759px) { .pdf-toolbar { position: relative; } .open-pdf { margin: 16px; } #pdf-pages { padding: 8px; } }

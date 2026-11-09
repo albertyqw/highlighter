@@ -12,13 +12,17 @@
   ];
   const BY_KEY = Object.fromEntries(COLORS.map((c) => [c.key, c]));
   const CONTEXT = 40;
-  const SKIP = 'script,style,noscript,textarea,input,select,option,[contenteditable]:not([contenteditable="false"]),#close-reader-host';
-  const storageKey = 'cr:' + location.origin + location.pathname + location.search;
+  const SKIP = 'script,style,noscript,textarea,input,select,option,[data-cr-ui],[contenteditable]:not([contenteditable="false"]),#close-reader-host';
+  const pdfMode = document.documentElement.dataset.crPdf === 'true' && location.href.startsWith(chrome.runtime.getURL('pdf.html'));
+  const sourceUrl = pdfMode ? document.documentElement.dataset.crSourceUrl : location.href;
+  const sourceName = pdfMode ? document.documentElement.dataset.crSourceName : '';
+  const storageKey = pdfMode ? document.documentElement.dataset.crStorageKey : 'cr:' + location.origin + location.pathname + location.search;
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   let enabled = false;
   let panelOpen = false;
   let highlights = [];
+  let screenshots = [];
   let activeId = null;
 
   const uid = () =>
@@ -38,7 +42,7 @@
     try {
       if (highlights.length) {
         chrome.storage.local.set({
-          [storageKey]: { title: document.title, url: location.href, updated: new Date().toISOString(), items: highlights },
+          [storageKey]: { title: document.title, url: sourceUrl, sourceName, updated: new Date().toISOString(), items: highlights },
         });
       } else {
         chrome.storage.local.remove(storageKey);
@@ -49,8 +53,8 @@
   }
 
   // ---------- text index: the page's visible text as one string ----------
-  function buildIndex() {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+  function buildIndex(scope = pdfMode ? document.getElementById('pdf-pages') : document.body) {
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
       acceptNode(n) {
         if (!n.nodeValue) return NodeFilter.FILTER_REJECT;
         const p = n.parentElement;
@@ -129,7 +133,7 @@
     let bestDist = Infinity;
     let j = t.indexOf(h.text);
     while (j >= 0) {
-      const d = Math.abs(j - h.pos);
+      const d = Math.abs(j - (h.pagePos ?? h.pos));
       if (d < bestDist) { best = j; bestDist = d; }
       j = t.indexOf(h.text, j + 1);
     }
@@ -142,7 +146,9 @@
     let placed = 0;
     for (const h of highlights) {
       if (isPlaced(h)) continue;
-      const idx = buildIndex();
+      const scope = pdfMode && h.pdfPage ? document.querySelector(`[data-pdf-page="${Number(h.pdfPage)}"] .textLayer`) : null;
+      if (pdfMode && !scope) continue;
+      const idx = scope ? buildIndex(scope) : buildIndex();
       const s = locate(h, idx);
       if (s >= 0 && wrap(idx, s, s + h.text.length, h)) placed++;
     }
@@ -175,27 +181,35 @@
     if (!sel.rangeCount || sel.isCollapsed) return;
     const range = sel.getRangeAt(0);
     if (isEditable(range.commonAncestorContainer)) return;
-    const idx = buildIndex();
-    const off = rangeToOffsets(range, idx);
-    if (!off) return;
-    const h = {
+    const scopes = pdfMode ? [...document.querySelectorAll('.pdf-page .textLayer')].filter(scope => range.intersectsNode(scope)) : [document.body];
+    const createdIds = [];
+    // A selection spanning PDF pages becomes one anchored highlight per page.
+    const selections = scopes.map(scope => { const idx = buildIndex(scope); return { scope, idx, off: rangeToOffsets(range, idx) }; });
+    for (const { scope, idx, off } of selections) {
+      if (!off) continue;
+      const pdfPage = pdfMode ? Number(scope.closest('[data-pdf-page]').dataset.pdfPage) : undefined;
+      const h = {
       id: uid(),
       color,
       text: idx.text.slice(off.s, off.e),
       prefix: idx.text.slice(Math.max(0, off.s - CONTEXT), off.s),
       suffix: idx.text.slice(off.e, off.e + CONTEXT),
-      pos: off.s,
+      pos: pdfMode ? pdfPage * 10000000 + off.s : off.s,
+      ...(pdfMode ? { pdfPage, pagePos: off.s } : {}),
       note: '',
       created: new Date().toISOString(),
     };
-    if (!wrap(idx, off.s, off.e, h)) return;
-    highlights.push(h);
+      if (!wrap(idx, off.s, off.e, h)) continue;
+      highlights.push(h);
+      createdIds.push(h.id);
+    }
+    if (!createdIds.length) return;
     save();
     sel.removeAllRanges();
     hidePalette();
     renderPanel();
     updatePill();
-    if (withNote) openPopover(h.id);
+    if (withNote) openPopover(createdIds[0]);
   }
 
   function setColor(id, color) {
@@ -227,23 +241,37 @@
 
   function flash(id) {
     const ms = marksFor(id);
-    if (!ms.length) return;
+    if (!ms.length) {
+      const highlight = highlights.find(item => item.id === id);
+      if (pdfMode && highlight?.pdfPage) document.dispatchEvent(new CustomEvent('cr-pdf-show-page', { detail: { page: highlight.pdfPage, id } }));
+      return;
+    }
     ms[0].scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
     ms.forEach((m) => m.classList.add('cr-flash'));
     setTimeout(() => ms.forEach((m) => m.classList.remove('cr-flash')), 1400);
   }
 
   function toMarkdown() {
-    const lines = [`# ${document.title || location.href}`, '', location.href, '', `Exported ${new Date().toLocaleDateString()}`];
+    const lines = [`# ${document.title || sourceName || sourceUrl}`, '', sourceUrl || `Local PDF: ${sourceName}`, '', `Exported ${new Date().toLocaleDateString()}`];
     for (const c of COLORS) {
       const items = highlights.filter((h) => h.color === c.key).sort((a, b) => a.pos - b.pos);
       if (!items.length) continue;
       lines.push('', `## ${c.heading}`, '');
       for (const h of items) {
+        if (h.pdfPage) lines.push(`Page ${h.pdfPage}`, '');
         h.text.split(/\n+/).map((l) => l.trim()).filter(Boolean).forEach((l) => lines.push('> ' + l));
         if (h.note.trim()) lines.push('', 'Note: ' + h.note.trim());
         lines.push('');
       }
+    }
+    if (screenshots.length) {
+      lines.push('', '## Screenshots', '');
+      screenshots.forEach((shot, index) => {
+        lines.push(`![Screenshot ${index + 1}](close-reader-screenshot-${shot.id}.png)`);
+        if (shot.caption) lines.push('', shot.caption);
+        if (shot.pdfPage) lines.push('', `PDF page ${shot.pdfPage}`);
+        lines.push('');
+      });
     }
     return lines.join('\n');
   }
@@ -305,12 +333,12 @@
     .btn.danger:hover { color: #C0362C; background: var(--bg); }
 
     .pill { right: 16px; bottom: 16px; display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 12px; border-radius: 999px; font: 500 12px/1 var(--sans); }
-    .root.panel-open .pill { right: calc(min(380px, 92vw) + 16px); }
+    .root.panel-open .pill { right: calc(min(380px, 42vw) + 16px); }
     .dot { width: 10px; height: 10px; border-radius: 50%;
       background: conic-gradient(rgb(255 214 10) 0 20%, rgb(255 159 28) 0 40%, rgb(78 168 222) 0 60%, rgb(82 183 136) 0 80%, rgb(255 112 166) 0); }
     .pill .btn { background: var(--bg); }
 
-    .panel { position: fixed; top: 0; right: 0; height: 100vh; width: min(380px, 92vw); display: flex; flex-direction: column;
+    .panel { position: fixed; top: 0; right: 0; height: 100dvh; width: min(380px, 42vw); display: flex; flex-direction: column;
       background: var(--bg); border-left: 1px solid var(--rule); box-shadow: -10px 0 30px rgb(15 20 35 / .12); }
     @media (prefers-reduced-motion: no-preference) { .panel { animation: in .18s ease-out; } }
     @keyframes in { from { transform: translateX(16px); opacity: 0; } }
@@ -323,6 +351,32 @@
     .import-status { padding: 0 16px; margin: 8px 0; color: var(--muted); overflow-wrap: anywhere; }
     .import-status:empty { display: none; }
     .import-status a { color: var(--accent); }
+    .capture-card { padding: 10px; margin: 8px 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+    .capture-card img { display: block; width: 100%; max-height: 220px; object-fit: contain; background: white; border-radius: 4px; }
+    .capture-card textarea { min-height: 54px; font: 12px/1.4 var(--sans); }
+    .capture-card .row { flex-wrap: wrap; gap: 4px; }
+    .capture-section h3::before { background: var(--accent); }
+    .capture-screen { position: fixed; inset: 0; z-index: 2147483647; cursor: crosshair; background: #0002; user-select: none; touch-action: none; font: 14px/1.4 system-ui, sans-serif; color: #fff; }
+    .capture-help { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px; padding: 12px 16px; width: max-content; max-width: 90vw; background: #1c2230; border-radius: 10px; box-shadow: 0 3px 16px #0004; }
+    .capture-help button { padding: 6px 9px; background: #fff; color: #1c2230; border-radius: 5px; cursor: pointer; }
+    .capture-help button:focus-visible { outline: 2px solid #9db6e8; outline-offset: 2px; }
+    .capture-box { position: fixed; border: 2px solid #fff; outline: 1px solid #2f4a7a; background: #9db6e81a; pointer-events: none; }
+    .import-fields { padding: 10px 16px; margin: 0; border: 0; border-bottom: 1px solid var(--rule); max-height: 36dvh; overflow-y: auto; flex-shrink: 0; min-width: 0; }
+    .import-fields label { display: block; margin-bottom: 8px; font-size: 12px; }
+    .import-fields input:not([type="checkbox"]) { display: block; width: 100%; margin-top: 4px; padding: 6px 8px; box-sizing: border-box; font: 13px var(--sans); color: var(--ink); background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; }
+    .import-fields input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .import-fields small { display: block; color: var(--muted); font-size: 11px; }
+    .choices { margin-top: 8px; background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; }
+    .choices summary { padding: 6px 8px; cursor: pointer; }
+    .choice-list { max-height: 150px; overflow: auto; padding: 4px 8px; }
+    .choice-list label { display: flex; align-items: center; gap: 6px; padding: 3px 0; margin: 0; }
+    .import-status { max-height: 18dvh; overflow-y: auto; flex-shrink: 0; }
+    @media (max-width: 759px) {
+      .panel { top: auto; bottom: 0; height: 45dvh; width: 100%; border-top: 1px solid var(--rule); }
+      .root.panel-open .pill { right: 16px; bottom: calc(45dvh + 16px); }
+      .import-fields { max-height: 18dvh; }
+      .panel footer { display: none; }
+    }
     .list { flex: 1; overflow-y: auto; padding: 4px 16px 16px; }
     h3 { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; font: 600 12px/1.2 var(--sans); }
     h3::before { content: ''; width: 10px; height: 10px; border-radius: 3px; background: rgb(var(--c)); }
@@ -413,20 +467,190 @@
     },
   });
   const importStatus = h('p', { class: 'import-status', role: 'status', 'aria-live': 'polite' });
+  const captureStatus = h('p', { class: 'import-status', role: 'status', 'aria-live': 'polite' });
+  let captionWrites = Promise.resolve();
+  async function screenshotRequest(type, fields = {}) {
+    const result = await chrome.runtime.sendMessage({ type: 'screenshots-' + type, pageKey: storageKey, ...fields });
+    if (!result) throw new Error('No response from the extension. Reload the extension and this tab.');
+    if (result.error) throw new Error(result.error);
+    return result;
+  }
+  async function loadScreenshots() {
+    try {
+      screenshots = (await screenshotRequest('list')).screenshots || [];
+      renderPanel(); updatePill();
+    } catch (error) { captureStatus.textContent = error.message; }
+  }
+  function appendScreenshots() {
+    if (!screenshots.length) return;
+    const section = h('section', { class: 'capture-section' }, [h('h3', { text: `Screenshots (${screenshots.length})` })]);
+    screenshots.forEach((shot, index) => {
+      const caption = h('textarea', { 'aria-label': `Screenshot caption ${index + 1}`, placeholder: 'Add a caption or note', maxlength: '2000', oninput: () => {
+        shot.caption = caption.value.slice(0, 2000);
+        captionWrites = captionWrites.catch(() => {}).then(() => screenshotRequest('update', { id: shot.id, caption: shot.caption }));
+        captionWrites.catch(error => { captureStatus.textContent = error.message; });
+      } });
+      caption.value = shot.caption || ''; caption.disabled = importing;
+      section.appendChild(h('div', { class: 'capture-card' }, [
+        h('img', { src: shot.thumbnail, alt: `Screenshot ${index + 1}${shot.pdfPage ? `, PDF page ${shot.pdfPage}` : ''}` }), caption,
+        shot.pdfPage ? h('div', { class: 'missing', text: `PDF page ${shot.pdfPage}` }) : null,
+        h('div', { class: 'row' }, [
+          h('button', { class: 'btn quiet', text: 'Download PNG', onclick: async () => {
+            try {
+              const result = await screenshotRequest('read', { id: shot.id });
+              const link = h('a', { href: result.dataUrl, download: `close-reader-screenshot-${shot.id}.png` });
+              root.append(link); link.click(); link.remove();
+            } catch (error) { captureStatus.textContent = error.message; }
+          } }),
+          h('button', { class: 'btn quiet danger', text: 'Remove screenshot', onclick: async () => {
+            if (importing) return;
+            try {
+              await captionWrites;
+              await screenshotRequest('remove', { id: shot.id });
+              screenshots = screenshots.filter(item => item.id !== shot.id); renderPanel(); updatePill();
+            } catch (error) { captureStatus.textContent = error.message; }
+          } }),
+        ]),
+      ]));
+    });
+    list.appendChild(section);
+  }
+  let capturing = false;
+  function startScreenshot() {
+    if (capturing || importing) return;
+    closePopover(); hidePalette(); capturing = true;
+    const previousFocus = shadow.activeElement || document.activeElement;
+    const selection = h('div', { class: 'capture-box', hidden: '' });
+    let start, taking = false;
+    const restore = () => { layer.remove(); root.hidden = false; capturing = false; previousFocus?.focus?.({ preventScroll: true }); };
+    const cancel = () => { restore(); captureStatus.textContent = 'Screenshot cancelled.'; };
+    const take = async rect => {
+      if (taking) return;
+      taking = true;
+      const viewport = { width: innerWidth, height: innerHeight };
+      layer.hidden = true;
+      const center = rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : { x: innerWidth / 2, y: innerHeight / 2 };
+      const pdfPage = pdfMode ? Number(document.elementFromPoint(center.x, center.y)?.closest('[data-pdf-page]')?.dataset.pdfPage) || undefined : undefined;
+      try {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const tabId = pdfMode ? (await chrome.tabs.getCurrent())?.id : undefined;
+        await screenshotRequest('capture', { rect, viewport, pdfPage, tabId });
+        restore();
+        await loadScreenshots();
+        togglePanel(true); list.scrollTop = list.scrollHeight;
+        captureStatus.textContent = 'Screenshot saved. Add a caption below; it will be included in your Notion import.';
+      } catch (error) { restore(); captureStatus.textContent = error.message; togglePanel(true); }
+    };
+    const layer = h('div', { class: 'capture-screen', role: 'dialog', 'aria-label': 'Capture screenshot', 'aria-modal': 'true', tabindex: '0', onkeydown: event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel(); }
+      else if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) event.preventDefault();
+    }, onpointerdown: event => {
+      if (event.target.closest('button')) return;
+      event.preventDefault(); start = { x: event.clientX, y: event.clientY };
+      layer.setPointerCapture(event.pointerId); selection.hidden = false;
+      selection.style.cssText = `left:${start.x}px;top:${start.y}px;width:0;height:0`;
+    }, onpointermove: event => {
+      if (!start) return;
+      selection.style.cssText = `left:${Math.min(start.x, event.clientX)}px;top:${Math.min(start.y, event.clientY)}px;width:${Math.abs(start.x - event.clientX)}px;height:${Math.abs(start.y - event.clientY)}px`;
+    }, onpointerup: event => {
+      if (!start) return;
+      const rect = { x: Math.min(start.x, event.clientX), y: Math.min(start.y, event.clientY), width: Math.abs(start.x - event.clientX), height: Math.abs(start.y - event.clientY) };
+      start = null;
+      if (rect.width < 8 || rect.height < 8) { selection.hidden = true; return; }
+      event.preventDefault(); take(rect);
+    } }, [
+      h('div', { class: 'capture-help' }, [document.createTextNode('Drag around a figure or area · Esc to cancel'),
+        h('button', { text: 'Capture visible page', onclick: () => take(null) }), h('button', { text: 'Cancel', onclick: cancel }),
+      ]), selection,
+    ]);
+    layer.addEventListener('wheel', event => event.preventDefault(), { passive: false });
+    root.hidden = true; shadow.appendChild(layer); layer.focus();
+  }
   let importing = false;
+  let contextLoading = false;
+  let notionContext = null;
+  const metadata = CloseReaderArticle.extract(document);
+  if (pdfMode) {
+    metadata.title = document.title;
+    metadata.publishedDate = document.documentElement.dataset.crPublicationDate || '';
+  }
+  const articleTitle = h('input', { type: 'text', 'aria-label': 'Article title' });
+  articleTitle.value = metadata.title;
+  const publicationDate = h('input', { type: 'date', 'aria-label': 'Publication date' });
+  publicationDate.value = metadata.publishedDate;
+  const dateHint = h('small', { text: metadata.publishedDate ? 'Detected from the article. Please verify.' : 'Publication date not found. Enter it before importing.' });
+  publicationDate.addEventListener('input', () => { dateHint.textContent = CloseReaderArticle.dateOnly(publicationDate.value) ? 'Publication date entered. Please verify it matches the source.' : 'Enter the publication date before importing.'; });
+  const selected = { topics: new Set(), projects: new Set() };
+  const dropdowns = {};
+  function choices(key, label) {
+    const summary = h('summary', { text: label });
+    const options = h('div', { class: 'choice-list', text: 'Connect Notion to load choices.' });
+    dropdowns[key] = { summary, options, label };
+    return h('details', { class: 'choices' }, [summary, options]);
+  }
+  const importFields = h('fieldset', { class: 'import-fields', 'aria-label': 'Reads article details' }, [
+    h('label', {}, [document.createTextNode('Article title'), articleTitle]),
+    h('label', {}, [document.createTextNode('Publication date'), publicationDate, dateHint]),
+    choices('topics', 'Topic tags'), choices('projects', 'Projects'),
+  ]);
+  async function loadNotionChoices() {
+    if (contextLoading || importing) return;
+    contextLoading = true;
+    notionBtn.disabled = true;
+    importStatus.textContent = 'Loading Reads topics and projects…';
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'notion-context' });
+      notionContext = result?.context || null;
+      if (!notionContext) {
+        importStatus.textContent = result?.setup ? 'This extension has no saved Notion token. Open Notion settings to connect Reads. Connecting Notion in Codex does not connect the browser extension.' : result?.error || 'Could not check the Notion connection. Reload the extension and this PDF/article tab, then refresh Notion choices.';
+        return;
+      }
+      for (const key of ['topics', 'projects']) {
+        const { summary, options, label } = dropdowns[key];
+        const available = notionContext.fields[key].options;
+        selected[key] = new Set([...selected[key]].filter(id => available.some(option => option.id === id)));
+        summary.textContent = `${label} (${selected[key].size} selected)`;
+        options.replaceChildren();
+        if (!available.length) options.textContent = `No existing ${label.toLowerCase()} in Reads.`;
+        for (const option of available) {
+          const input = h('input', { type: 'checkbox', value: option.id, onchange: () => {
+            if (input.checked) selected[key].add(option.id); else selected[key].delete(option.id);
+            summary.textContent = `${label} (${selected[key].size} selected)`;
+          } });
+          input.checked = selected[key].has(option.id);
+          options.appendChild(h('label', {}, [input, document.createTextNode(option.name)]));
+        }
+      }
+      importStatus.textContent = 'Destination: Reads. Review the title and publication date before importing.';
+    } catch {
+      notionContext = null;
+      importStatus.textContent = 'Could not load Reads. Reload the page or check Notion settings.';
+    } finally {
+      contextLoading = false;
+      notionBtn.disabled = (!highlights.length && !screenshots.length) || !notionContext;
+    }
+  }
   const notionBtn = h('button', {
     class: 'btn primary', text: 'Import to Notion',
     onclick: async () => {
-      if (importing || !highlights.length) return;
+      if (importing || (!highlights.length && !screenshots.length) || !notionContext) return;
+      if (!articleTitle.value.trim() || !CloseReaderArticle.dateOnly(publicationDate.value)) {
+        importStatus.textContent = 'Enter the article title and explicit publication date before importing.';
+        (!articleTitle.value.trim() ? articleTitle : publicationDate).focus();
+        return;
+      }
       closePopover(); // Flush a note that is still waiting for its save timer.
       importing = true;
+      importFields.disabled = true;
+      list.querySelectorAll('.capture-card textarea').forEach(input => { input.disabled = true; });
       notionBtn.disabled = true;
       notionBtn.textContent = 'Importing…';
       importStatus.textContent = 'Sending this page’s highlights and notes to Notion…';
       try {
+        await captionWrites;
         const result = await chrome.runtime.sendMessage({
           type: 'notion-import',
-          page: { title: document.title, url: location.href, items: highlights.map(({ text, note, color, pos }) => ({ text, note, color, pos })) },
+          page: { title: articleTitle.value.trim(), publishedDate: publicationDate.value, topics: [...selected.topics], projects: [...selected.projects], url: sourceUrl, captureKey: storageKey, screenshots: screenshots.map(({ id }) => ({ id })), ...(pdfMode ? { kind: 'pdf', sourceName } : {}), items: highlights.map(({ text, note, color, pos, pdfPage }) => ({ text, note, color, pos, ...(pdfPage ? { pdfPage } : {}) })) },
         });
         if (!result) throw new Error('No response from the extension. Reload this page and try again.');
         if (result.setup) {
@@ -436,7 +660,7 @@
           importStatus.textContent = result.error || 'Imported. ';
           if (result.url) {
             const url = new URL(result.url);
-            if (url.protocol === 'https:' && (url.hostname === 'notion.so' || url.hostname.endsWith('.notion.so'))) {
+            if (url.protocol === 'https:' && (url.hostname === 'notion.so' || url.hostname.endsWith('.notion.so') || url.hostname.endsWith('.notion.com'))) {
               importStatus.appendChild(h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', text: 'Open in Notion' }));
             }
           }
@@ -445,8 +669,10 @@
         importStatus.textContent = `${error.message} Check Notion before retrying; the import may have completed.`;
       } finally {
         importing = false;
+        importFields.disabled = false;
+        list.querySelectorAll('.capture-card textarea').forEach(input => { input.disabled = false; });
         notionBtn.textContent = 'Import to Notion';
-        notionBtn.disabled = !highlights.length;
+        notionBtn.disabled = !highlights.length && !screenshots.length;
       }
     },
   });
@@ -459,6 +685,7 @@
     h('div', { class: 'actions' }, [
       notionBtn,
       copyBtn,
+      h('button', { class: 'btn quiet', text: 'Screenshot', title: 'Capture an area or visible page (Alt/Option + Shift + S)', onclick: startScreenshot }),
       h('button', {
         class: 'btn quiet', text: 'Notion settings',
         onclick: async () => {
@@ -469,8 +696,11 @@
           }
         },
       }),
+      h('button', { class: 'btn quiet', text: 'Refresh Notion choices', onclick: () => loadNotionChoices() }),
     ]),
+    importFields,
     importStatus,
+    captureStatus,
     list,
     h('footer', { class: 'keys' }, [
       ...COLORS.map((c, i) => h('span', { class: 'k', style: `--c:${c.rgb}` }, [h('i'), document.createTextNode(`${i + 1} ${c.label}`)])),
@@ -531,23 +761,25 @@
 
   function updatePill() {
     pill.hidden = !enabled;
-    pillCount.textContent = String(highlights.length);
+    pillCount.textContent = String(highlights.length + screenshots.length);
   }
 
   function togglePanel(force) {
     panelOpen = typeof force === 'boolean' ? force : !panelOpen;
     panel.hidden = !panelOpen;
     root.classList.toggle('panel-open', panelOpen);
+    document.documentElement.classList.toggle('cr-panel-open', panelOpen);
     renderPanel();
+    if (panelOpen) loadNotionChoices();
   }
 
   function renderPanel() {
-    panelCount.textContent = String(highlights.length);
-    notionBtn.disabled = importing || !highlights.length;
-    copyBtn.disabled = !highlights.length;
+    panelCount.textContent = String(highlights.length + screenshots.length);
+    notionBtn.disabled = importing || contextLoading || !notionContext || (!highlights.length && !screenshots.length);
+    copyBtn.disabled = !highlights.length && !screenshots.length;
     if (!panelOpen) return;
     list.replaceChildren();
-    if (!highlights.length) {
+    if (!highlights.length && !screenshots.length) {
       list.appendChild(h('p', { class: 'empty', text: 'Nothing highlighted yet. Turn highlighting on, select text, then press 1 to 5.' }));
       return;
     }
@@ -564,12 +796,14 @@
           onclick: () => flash(x.id),
         }, [
           h('div', { class: 'quote', text: quote }),
+          x.pdfPage ? h('div', { class: 'missing', text: `PDF page ${x.pdfPage}` }) : null,
           x.note.trim() ? h('div', { class: 'note', text: x.note.trim() }) : null,
           isPlaced(x) ? null : h('div', { class: 'missing', text: 'Not found on the page right now' }),
         ]));
       }
       list.appendChild(section);
     }
+    appendScreenshots();
   }
 
   function setEnabled(v) {
@@ -578,6 +812,7 @@
     hidePalette();
     if (!v) closePopover();
     updatePill();
+    if (pdfMode) document.dispatchEvent(new CustomEvent('cr-pdf-state', { detail: { enabled } }));
   }
 
   // ---------- page events ----------
@@ -624,17 +859,32 @@
   addEventListener('scroll', hidePalette, { passive: true, capture: true });
 
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
-    if (msg.type === 'toggle') setEnabled(!enabled);
-    else if (msg.type === 'panel') togglePanel();
-    reply({ enabled });
+    return CloseReaderMessaging.pageMessage(msg, {
+      toggle: () => setEnabled(!enabled), panel: () => togglePanel(), screenshot: startScreenshot, enabled: () => enabled,
+    }, reply);
   });
+  if (pdfMode) {
+    document.addEventListener('cr-pdf-command', ({ detail }) => {
+      if (detail.type === 'toggle') setEnabled(!enabled);
+      else if (detail.type === 'panel') togglePanel();
+      else if (detail.type === 'screenshot') startScreenshot();
+    });
+    document.addEventListener('cr-pdf-before-render', closePopover);
+    document.addEventListener('cr-pdf-page-rendered', () => { restorePending(); renderPanel(); });
+    document.addEventListener('cr-pdf-jump-ready', ({ detail }) => flash(detail.id));
+  }
 
   // ---------- start ----------
   (async () => {
     await load();
     restorePending();
-    if (highlights.length && !highlights.every(isPlaced)) watchForLateContent();
+    if (!pdfMode && highlights.length && !highlights.every(isPlaced)) watchForLateContent();
+    if (pdfMode) {
+      setEnabled(true);
+      if (new URLSearchParams(location.search).get('mode') === 'panel') togglePanel(true);
+    }
     updatePill();
     renderPanel();
+    loadScreenshots();
   })();
 })();

@@ -1,5 +1,7 @@
 # Close Reader
 
+[Project overview, screenshots, and development preview](../README.md)
+
 Five-colour highlighting and notes for reading on the web. Works in Chrome, Arc, Brave and Edge.
 
 | Key | Colour | Use it for |
